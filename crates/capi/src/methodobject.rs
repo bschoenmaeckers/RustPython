@@ -5,7 +5,6 @@ use crate::pystate::with_vm;
 use crate::util::CStrExt;
 use core::ffi::{c_char, c_int};
 use core::fmt::Debug;
-use core::ptr::NonNull;
 use rustpython_vm::function::{FuncArgs, HeapMethodDef, PosArgs, PyMethodFlags};
 use rustpython_vm::types::c_slots::{kwargs_ptr, ret_ptr_to_pyresult, split_args};
 use rustpython_vm::{AsObject, PyObjectRef, PyRef, PyResult, VirtualMachine};

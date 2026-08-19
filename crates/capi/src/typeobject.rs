@@ -9,9 +9,7 @@
 //! `__new__` is the same wrapper a native type gets, so a call through it is
 //! checked by `PyType::__new__` before it reaches the slot.
 
-use crate::object::PyTypeObject;
-use core::ffi::{c_int, c_void};
-use core::ptr;
+use core::ffi::c_int;
 use rustpython_vm::builtins::PyType;
 use rustpython_vm::function::PyMethodFlags;
 use rustpython_vm::types::{CNewFunc, CSlotId, CSlots};
@@ -42,29 +40,11 @@ pub fn set_tp_new(vm: &VirtualMachine, ty: &Py<PyType>, tp_new: newfunc) -> PyRe
     Ok(())
 }
 
-/// Only slots installed from C are reported. A slot backed by a Rust function
-/// has no C ABI entry point yet and reads as empty, as does a slot id this
-/// layer does not handle.
-#[unsafe(no_mangle)]
-#[allow(non_upper_case_globals)]
-pub unsafe extern "C" fn PyType_GetSlot(ty: *const PyTypeObject, slot: c_int) -> *mut c_void {
-    let ty = unsafe { &*ty };
-    let Some(c_slots) = ty.slots.c_slots() else {
-        return ptr::null_mut();
-    };
-    match CSlotId::from_raw(slot) {
-        Some(CSlotId::TpNew) => c_slots
-            .new
-            .load()
-            .map_or(ptr::null_mut(), |f| f as *mut c_void),
-        None => ptr::null_mut(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::PyObject;
+    use crate::{PyObject, object::{PyType_GetSlot, PyTypeObject}};
+    use core::ffi::c_void;
     use pyo3::Python;
     use rustpython_vm::builtins::{PyStrRef, PyTuple, PyTypeRef};
     use rustpython_vm::function::{FuncArgs, KwArgs};
