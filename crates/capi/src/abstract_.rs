@@ -2,6 +2,7 @@ use crate::util::CStrExt;
 use crate::{PyObject, pystate::with_vm};
 use alloc::slice;
 use core::ffi::{c_char, c_int};
+use core::ptr::NonNull;
 pub use iter::*;
 pub use mapping::*;
 pub use number::*;
@@ -35,6 +36,14 @@ fn dict_to_kwargs(vm: &VirtualMachine, dict: &Py<PyDict>) -> PyResult<KwArgs> {
         })
         .collect::<PyResult<_>>()
         .map(KwArgs::new)
+}
+
+fn varargs_to_args(mut args: core::ffi::VaList<'_>) -> PosArgs {
+    core::iter::from_fn(|| unsafe {
+        NonNull::new(args.next_arg::<*mut PyObject>()).map(|obj| obj.as_ref().to_owned())
+    })
+    .collect::<Vec<_>>()
+    .into()
 }
 
 #[unsafe(no_mangle)]
@@ -73,6 +82,27 @@ pub unsafe extern "C" fn PyObject_CallObject(
             callable.call((), vm)
         }
     })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_CallMethodObjArgs(
+    receiver: *mut PyObject,
+    name: *mut PyObject,
+    args: ...
+) -> *mut PyObject {
+    with_vm(|vm| {
+        let method_name = unsafe { (&*name).try_downcast_ref::<PyStr>(vm)? };
+        let callable = unsafe { (&*receiver).get_attr(method_name, vm)? };
+        callable.call(varargs_to_args(args), vm)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyObject_CallFunctionObjArgs(
+    callable: *mut PyObject,
+    args: ...
+) -> *mut PyObject {
+    with_vm(|vm| unsafe { &*callable }.call(varargs_to_args(args), vm))
 }
 
 #[unsafe(no_mangle)]
@@ -271,6 +301,17 @@ pub unsafe extern "C" fn PyObject_Type(obj: *mut PyObject) -> *mut PyObject {
 mod tests {
     use pyo3::prelude::*;
     use pyo3::types::{PyDict, PyString};
+
+    #[test]
+    fn call_method0() {
+        Python::attach(|py| {
+            let string = PyString::new(py, "Hello, World!");
+            assert_eq!(
+                string.call_method0("upper").unwrap().str().unwrap(),
+                "HELLO, WORLD!"
+            );
+        })
+    }
 
     #[test]
     fn call_method1() {
