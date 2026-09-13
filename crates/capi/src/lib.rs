@@ -1,3 +1,4 @@
+#![cfg_attr(feature = "nightly", feature(c_variadic))]
 #![allow(clippy::missing_safety_doc)]
 
 use crate::pyerrors::init_exception_statics;
