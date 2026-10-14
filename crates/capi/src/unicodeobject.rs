@@ -1,7 +1,8 @@
+use crate::format::{FormatTarget, from_format_v_to_bytes};
 use crate::object::define_py_check;
 use crate::util::{CStrExt, FfiPtrExt};
 use crate::{PyObject, pystate::with_vm};
-use core::ffi::{CStr, c_char, c_int};
+use core::ffi::{CStr, VaList, c_char, c_int};
 use core::slice;
 use core::str;
 use rustpython_vm::builtins::{PyBytesRef, PyStr, PyStrRef, PyUtf8StrRef};
@@ -43,6 +44,31 @@ pub unsafe extern "C" fn PyUnicode_FromString(s: *const c_char) -> *mut PyObject
     with_vm(|vm| {
         let s = unsafe { s.try_as_str(vm)? };
         Ok(vm.ctx.new_str(s))
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_FromFormat(format: *const c_char, args: ...) -> *mut PyObject {
+    unsafe { PyUnicode_FromFormatV(format, args) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyUnicode_FromFormatV(
+    format: *const c_char,
+    args: VaList<'_>,
+) -> *mut PyObject {
+    with_vm(|vm| {
+        let result = unsafe { from_format_v_to_bytes(vm, format, args, FormatTarget::Unicode) }?;
+        let s = rustpython_vm::common::wtf8::Wtf8::from_bytes(&result).ok_or_else(|| {
+            vm.new_unicode_decode_error(
+                vm.ctx.new_str("utf-8"),
+                vm.ctx.new_bytes(result.clone()),
+                0,
+                result.len(),
+                vm.ctx.new_str("invalid UTF-8"),
+            )
+        })?;
+        Ok(vm.ctx.new_str(s.to_owned()))
     })
 }
 
@@ -516,8 +542,11 @@ pub unsafe extern "C" fn PyUnicode_EqualToUTF8AndSize(
 
 #[cfg(test)]
 mod tests {
+    use core::ffi::c_char;
     use std::ffi::{OsStr, OsString};
 
+    use pyo3::exceptions::PyUnicodeDecodeError;
+    use pyo3::ffi;
     use pyo3::intern;
     use pyo3::prelude::*;
     use pyo3::types::{PyBytes, PyString, PyStringMethods};
@@ -578,6 +607,32 @@ mod tests {
             let py_str = original.into_pyobject(py).unwrap();
             let roundtrip: OsString = py_str.extract().unwrap();
             assert_eq!(roundtrip, original);
+        })
+    }
+
+    #[test]
+    fn from_format() {
+        Python::attach(|py| unsafe {
+            let value = pyo3::Bound::from_owned_ptr_or_err(
+                py,
+                ffi::PyUnicode_FromFormat(c"%c %s %d".as_ptr(), 0x20AC, c"ok".as_ptr(), 42),
+            )
+            .unwrap();
+            let value = value.extract::<String>().unwrap();
+            assert_eq!(value, "\u{20AC} ok 42");
+        })
+    }
+
+    #[test]
+    fn from_format_invalid_utf8_in_percent_s() {
+        Python::attach(|py| unsafe {
+            let invalid_utf8 = [0xFF_u8, 0];
+            let result = pyo3::Bound::from_owned_ptr_or_err(
+                py,
+                ffi::PyUnicode_FromFormat(c"%s".as_ptr(), invalid_utf8.as_ptr().cast::<c_char>()),
+            );
+            let err = result.unwrap_err();
+            assert!(err.is_instance_of::<PyUnicodeDecodeError>(py));
         })
     }
 }

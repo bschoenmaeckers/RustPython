@@ -1,3 +1,4 @@
+use crate::unicodeobject::PyUnicode_FromFormatV;
 use crate::util::{CStrExt, FfiPtrExt};
 use crate::{PyObject, pystate::with_vm};
 use core::ffi::{c_char, c_int};
@@ -83,9 +84,48 @@ pub unsafe extern "C" fn PyErr_WarnExplicit(
     })
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_WarnFormat(
+    category: *mut PyObject,
+    stack_level: isize,
+    format: *const c_char,
+    args: ...
+) -> c_int {
+    with_vm(|vm| {
+        let message = unsafe { PyUnicode_FromFormatV(format, args).assume_owned_or_err(vm)? };
+        let category = resolve_warning_category(vm, category)?;
+
+        warn(message, Some(category), stack_level, None, vm)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_ResourceWarning(
+    source: *mut PyObject,
+    stack_level: isize,
+    format: *const c_char,
+    args: ...
+) -> c_int {
+    with_vm(|vm| {
+        let message = unsafe { PyUnicode_FromFormatV(format, args).assume_owned_or_err(vm)? };
+        let source = unsafe { source.assume_borrowed_or_opt() }.map(ToOwned::to_owned);
+
+        warn(
+            message,
+            Some(vm.ctx.exceptions.resource_warning.to_owned()),
+            stack_level,
+            source,
+            vm,
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    use core::ptr;
+
     use pyo3::exceptions::{PyRuntimeWarning, PyUserWarning};
+    use pyo3::ffi;
     use pyo3::prelude::*;
     use pyo3::types::PyType;
 
@@ -120,6 +160,28 @@ mod tests {
             let not_warning = py.get_type::<PyType>();
             let err = PyErr::warn(py, &not_warning, c"not warning", 1).unwrap_err();
             assert!(err.is_instance_of::<pyo3::exceptions::PyTypeError>(py));
+        })
+    }
+
+    #[test]
+    fn warn_format_works() {
+        Python::attach(|py| unsafe {
+            assert_eq!(
+                ffi::PyErr_WarnFormat(ffi::PyExc_UserWarning, 1, c"warn %d".as_ptr(), 7),
+                0
+            );
+            assert!(!PyErr::occurred(py));
+        })
+    }
+
+    #[test]
+    fn resource_warning_works() {
+        Python::attach(|py| unsafe {
+            assert_eq!(
+                ffi::PyErr_ResourceWarning(ptr::null_mut(), 1, c"resource %d".as_ptr(), 9),
+                0
+            );
+            assert!(!PyErr::occurred(py));
         })
     }
 }

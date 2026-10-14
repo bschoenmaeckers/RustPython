@@ -1,8 +1,9 @@
 use crate::object::define_py_check;
+use crate::unicodeobject::PyUnicode_FromFormatV;
 use crate::util::{CStrExt, FfiPtrExt};
 use crate::{PyObject, pystate::with_vm};
 use core::convert::Infallible;
-use core::ffi::{c_char, c_int};
+use core::ffi::{VaList, c_char, c_int};
 use core::slice;
 use rustpython_vm::builtins::{PyBaseException, PyTraceback, PyTuple, PyType};
 use rustpython_vm::exceptions::ExceptionZoo;
@@ -145,6 +146,34 @@ pub unsafe extern "C" fn PyErr_SetString(exception: *mut PyObject, message: *con
         let exc = vm.invoke_exception(exc_type, vec![vm.ctx.new_str(message).into_object()])?;
 
         Err(exc)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_Format(
+    exception: *mut PyObject,
+    format: *const c_char,
+    args: ...
+) -> *mut PyObject {
+    unsafe { PyErr_FormatV(exception, format, args) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn PyErr_FormatV(
+    exception: *mut PyObject,
+    format: *const c_char,
+    args: VaList<'_>,
+) -> *mut PyObject {
+    with_vm(|vm| {
+        let exception_type = unsafe {exception.assume_borrowed()};
+        let message = unsafe { PyUnicode_FromFormatV(format, args).assume_owned_or_err(vm)? };
+        let normalized = vm.normalize_exception(
+            exception_type.to_owned(),
+            message,
+            vm.ctx.none(),
+        )?;
+        vm.set_exception(Some(normalized));
+        Ok(core::ptr::null_mut())
     })
 }
 
@@ -376,6 +405,7 @@ mod tests {
     use pyo3::PyTypeInfo;
     use pyo3::create_exception;
     use pyo3::exceptions::{PyException, PyTypeError};
+    use pyo3::ffi;
     use pyo3::prelude::*;
 
     #[test]
@@ -408,6 +438,18 @@ mod tests {
                 exc_type.fully_qualified_name().unwrap(),
                 "my_module.MyError"
             );
+        })
+    }
+
+    #[test]
+    fn err_format_sets_exception() {
+        Python::attach(|py| unsafe {
+            let ret = ffi::PyErr_Format(ffi::PyExc_TypeError, c"bad %d".as_ptr(), 42);
+            assert!(ret.is_null());
+
+            let err = PyErr::take(py).unwrap();
+            assert!(err.is_instance_of::<PyTypeError>(py));
+            assert_eq!(err.value(py).to_string(), "bad 42");
         })
     }
 }
